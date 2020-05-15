@@ -2,6 +2,50 @@ import torch
 import torch.nn.init as init
 from torch.autograd import Variable
 
+#Encode Picture
+class Encoder(torch.nn.Module):
+    def __init__(self,input_dim,num_filters,output_dim=12):
+        super(Encoder,self).__init__()
+        self.output_dim=output_dim
+         # Hidden layers
+        self.hidden_layer = torch.nn.Sequential()
+        for i in range(len(num_filters)):
+            # Convolutional layer
+            if i == 0:
+                conv = torch.nn.Conv2d(input_dim, num_filters[i], kernel_size=4, stride=2, padding=1)
+            else:
+                conv = torch.nn.Conv2d(num_filters[i-1], num_filters[i], kernel_size=4, stride=2, padding=1)
+
+            conv_name = 'conv' + str(i + 1)
+            self.hidden_layer.add_module(conv_name, conv)
+
+            # Initializer
+            torch.nn.init.normal_(conv.weight, mean=0.0, std=0.02)
+            torch.nn.init.constant_(conv.bias, 0.0)
+
+            # Batch normalization
+            if i != 0:
+                bn_name = 'bn' + str(i + 1)
+                self.hidden_layer.add_module(bn_name, torch.nn.BatchNorm2d(num_filters[i]))
+
+            # Activation
+            act_name = 'act' + str(i + 1)
+            self.hidden_layer.add_module(act_name, torch.nn.LeakyReLU(0.2))
+
+        # Output layer
+        self.output_layer = torch.nn.Sequential()
+        # Convolutional layer
+        out = torch.nn.Conv2d(num_filters[i], output_dim, kernel_size=4, stride=1, padding=0)
+        self.output_layer.add_module('out', out)
+        # Initializer
+        torch.nn.init.normal_(out.weight, mean=0.0, std=0.02)
+        torch.nn.init.constant_(out.bias, 0.0)
+        # Activation
+        self.output_layer.add_module('act', torch.nn.Sigmoid())
+    def forward(self,x):
+        h = self.hidden_layer(x)
+        out = self.output_layer(h)
+        return out.reshape(-1,self.output_dim) 
 
 
 #Differentiable grammar using matrix mult production rules and gumble softmax to choose production rules.
@@ -13,7 +57,7 @@ class DifferentiableGrammar(torch.nn.Module):
         self.lstm_output_size=lstm_output_size
 
         #Grammar Module
-        self.grammar_mat=torch.randn(self.N,self.N).cuda()
+        self.grammar_mat=torch.ones(self.N,self.N).cuda()/float(self.N)
         #LSTM
         self.lstm=torch.nn.LSTM(input_size=self.N,hidden_size=self.lstm_output_size,num_layers=1,batch_first=True)
         
@@ -23,7 +67,8 @@ class DifferentiableGrammar(torch.nn.Module):
         init.xavier_uniform_(self.lstm.weight_hh_l0) 
 
     
-    def forward(self,one_hot):
+    def forward(self,x):
+        one_hot=torch.nn.functional.gumbel_softmax(x,hard=True) 
         sequence=[one_hot[None,:,:].clone()] 
         
         for _ in range(self.max_seq_length-1): 
@@ -40,11 +85,27 @@ class DifferentiableGrammar(torch.nn.Module):
         #packed=pack_padded_sequence(sequence,lengths,batch_first=False)
         x,(ht,ct)=self.lstm(sequence)
         return x[self.max_seq_length-1]
+class Classifier(torch.nn.Module):
+    def __init__(self,num_filters,N=12,max_seq_length=12,lstm_output_size=100,output_dim=10):
+        super(Classifier, self).__init__()
+        self.encoder=Encoder(1,num_filters[::-1],output_dim=N)
+        self.grammar=DifferentiableGrammar(N=N,max_seq_length=max_seq_length,lstm_output_size=lstm_output_size)
+        input_dim=lstm_output_size
+        self.input_dim=input_dim
+        self.output_dim=output_dim
+        self.final_layer=torch.nn.Linear(lstm_output_size,output_dim)
+    def forward(self,x):
+        x=self.encoder(x)
+        h=self.grammar(x)
+        h=torch.nn.Tanh()(self.final_layer(h)) 
+        return torch.nn.functional.log_softmax(h,dim=1) 
+
 
 # Generator model
 class Generator(torch.nn.Module):
     def __init__(self, num_filters, output_dim,N=12,max_seq_length=12,lstm_output_size=100):
         super(Generator, self).__init__()
+        self.encoder=Encoder(1,num_filters[::-1],output_dim=100)
         self.grammar=DifferentiableGrammar(N=N,max_seq_length=max_seq_length,lstm_output_size=lstm_output_size)
         input_dim=lstm_output_size
         self.input_dim=input_dim
@@ -83,8 +144,10 @@ class Generator(torch.nn.Module):
         # Activation
         self.output_layer.add_module('act', torch.nn.Tanh())
 
-    def forward(self, one_hot):
-        x=self.grammar(one_hot)
+    def forward(self, x,give_image=True):
+        if give_image:
+            x=self.encoder(x)
+        x=self.grammar(x)
         h = self.hidden_layer(x.view(-1,self.input_dim,1,1))
         out = self.output_layer(h)
         return out

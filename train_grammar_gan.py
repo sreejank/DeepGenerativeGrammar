@@ -3,7 +3,7 @@ from differentiable_grammar_gan import *
 import torchvision.datasets as dsets
 import torchvision.transforms as transforms
 import numpy as np
-import matplotlib
+import matplotlib 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt 
 import os
@@ -19,8 +19,8 @@ num_filters = [1024, 512, 256, 128]
 
 learning_rate = 0.0002
 betas = (0.5, 0.999)
-batch_size = 128
-num_epochs = 20
+batch_size = 128 
+num_epochs = 100
 data_dir = 'mnist_data'
 save_dir = 'MNIST_Grammar_results/'
 
@@ -30,14 +30,16 @@ def denorm(x):
     return out.clamp(0, 1)
 
 # Plot losses
-def plot_loss(d_losses, g_losses, num_epoch, save=False, save_dir='MNIST_Grammar_results/', show=False):
+def plot_loss(d_losses, g_losses, g_recon,g_advers,num_epoch, save=False, save_dir='MNIST_Grammar_results/', show=False):
     fig, ax = plt.subplots()
     ax.set_xlim(0, num_epochs)
     ax.set_ylim(0, max(np.max(g_losses), np.max(d_losses))*1.1)
     plt.xlabel('Epoch {0}'.format(num_epoch + 1))
     plt.ylabel('Loss values')
     plt.plot(d_losses, label='Discriminator')
-    plt.plot(g_losses, label='Generator')
+    plt.plot(g_losses, label='Generator Total')
+    plt.plot(g_recon,label='Generator Reconstruction')
+    plt.plot(g_advers,label='Generator Adverserial')
     plt.legend()
 
     # save figure
@@ -53,25 +55,32 @@ def plot_loss(d_losses, g_losses, num_epoch, save=False, save_dir='MNIST_Grammar
         plt.close()
 
 
-def plot_result(generator, noise, num_epoch, save=False, save_dir='MNIST_Grammar_results/', show=False, fig_size=(5, 5)):
+def plot_result(generator, fixed_loader, num_epoch, save=False, save_dir='MNIST_Grammar_results/', show=False, fig_size=(10, 2)): 
     generator.eval()
+
+    for images,labels in fixed_loader:
+        noise=images
+        break
 
     noise = Variable(noise.cuda())
     gen_image = generator(noise)
     gen_image = denorm(gen_image)
 
     generator.train()
+    n_rows = 10
+    n_cols = 2
+    fig, axes = plt.subplots(n_rows, n_cols)
+    for i in range(n_rows):
 
-    n_rows = np.sqrt(noise.size()[0]).astype(np.int32)
-    n_cols = np.sqrt(noise.size()[0]).astype(np.int32)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=fig_size)
-    for ax, img in zip(axes.flatten(), gen_image):
-        ax.axis('off')
-        ax.set_adjustable('box')
-        ax.imshow(img.cpu().data.view(image_size, image_size).numpy(), cmap='gray', aspect='equal')
+        axes[i][0].axis('off')
+        axes[i][1].axis('off')
+        axes[i][0].set_adjustable('box')
+        axes[i][1].set_adjustable('box')
+        axes[i][0].imshow(noise[i].cpu().data.view(image_size, image_size).numpy(), cmap='gray', aspect='equal')
+        axes[i][1].imshow(gen_image[i].cpu().data.view(image_size, image_size).numpy(), cmap='gray', aspect='equal')
     plt.subplots_adjust(wspace=0, hspace=0)
     title = 'Epoch {0}'.format(num_epoch+1)
-    fig.text(0.5, 0.04, title, ha='center')
+    fig.text(0.5, 0.04, title, ha='center') 
 
     # save figure
     if save:
@@ -117,7 +126,8 @@ G.cuda()
 D.cuda()
 
 # Loss function
-criterion = torch.nn.BCELoss()
+criterion_adverserial = torch.nn.BCELoss()
+criterion_reconstruction = torch.nn.MSELoss() 
 
 # Optimizers
 G_optimizer = torch.optim.Adam(G.parameters(), lr=learning_rate, betas=betas)
@@ -126,27 +136,33 @@ D_optimizer = torch.optim.Adam(D.parameters(), lr=learning_rate*0.1, betas=betas
 # Training GAN
 D_avg_losses = []
 G_avg_losses = []
+G_avg_recons=[]
+G_avg_adverss=[]
 
 # Fixed noise for test
-num_test_samples = 5*5
+num_test_samples = 10
 
-idxs_tensor=torch.LongTensor(num_test_samples).random_(0, 12)
+#idxs_tensor=torch.LongTensor(num_test_samples).random_(0, 12)
 
-fixed_noise = to_one_hot(idxs_tensor,n_dims=12)
-fixed_noise.shape
+#fixed_noise = to_one_hot(idxs_tensor,n_dims=12)
+#fixed_noise.shape
+
+fixed_loader=torch.utils.data.DataLoader(dataset=mnist_data,
+                                          batch_size=num_test_samples,
+                                          shuffle=True)
 
 train_D=True
 
 for epoch in range(num_epochs):
     D_losses = []
     G_losses = []
+    G_recons=[]
+    G_advers=[]
     # minibatch training
     for i, (images, _) in enumerate(data_loader):
-
         # image data
         mini_batch = images.size()[0]
         x_ = Variable(images.cuda())
-
         # labels
         y_real_ = Variable(torch.ones(mini_batch).cuda())
         y_fake_ = Variable(torch.zeros(mini_batch).cuda())
@@ -154,17 +170,17 @@ for epoch in range(num_epochs):
         # Train discriminator with real data
         D_real_decision = D(x_).squeeze()
         # print(D_real_decision, y_real_)
-        D_real_loss = criterion(D_real_decision, y_real_)
+        D_real_loss = criterion_adverserial(D_real_decision, y_real_)
 
         # Train discriminator with fake data
         #z_ = torch.randn(mini_batch, G_input_dim).view(-1, G_input_dim, 1, 1)
-        idxs_tensor=torch.LongTensor(mini_batch).random_(0, 12)
-        z_=to_one_hot(idxs_tensor,n_dims=12)
-        z_ = Variable(z_.cuda())
-        gen_image = G(z_)
+        #idxs_tensor=torch.LongTensor(mini_batch).random_(0, 12)
+        #z_=to_one_hot(idxs_tensor,n_dims=12)
+        #z_ = Variable(z_.cuda())
+        gen_image = G(x_)
 
         D_fake_decision = D(gen_image).squeeze()
-        D_fake_loss = criterion(D_fake_decision, y_fake_)
+        D_fake_loss = criterion_adverserial(D_fake_decision, y_fake_)
 
         # Back propagation
         D_loss = D_real_loss + D_fake_loss
@@ -175,13 +191,15 @@ for epoch in range(num_epochs):
 
         # Train generator
         #z_ = torch.randn(mini_batch, G_input_dim).view(-1, G_input_dim, 1, 1)
-        idxs_tensor=torch.LongTensor(mini_batch).random_(0, 12)
-        z_=to_one_hot(idxs_tensor,n_dims=12)
-        z_ = Variable(z_.cuda())
-        gen_image = G(z_)
+        #idxs_tensor=torch.LongTensor(mini_batch).random_(0, 12)
+        #z_=to_one_hot(idxs_tensor,n_dims=12)
+        #z_ = Variable(z_.cuda())
+        gen_image = G(x_)
 
         D_fake_decision = D(gen_image).squeeze()
-        G_loss = criterion(D_fake_decision, y_real_)
+        G_loss_adverserial=criterion_adverserial(D_fake_decision, y_real_)
+        G_loss_reconstruction=criterion_reconstruction(gen_image,x_)
+        G_loss = 0.5*G_loss_adverserial+0.5*G_loss_reconstruction
 
         # Back propagation
         D.zero_grad()
@@ -192,27 +210,34 @@ for epoch in range(num_epochs):
         # loss values
         D_losses.append(D_loss.item())
         G_losses.append(G_loss.item())
+        G_recons.append(G_loss_reconstruction.item())
+        G_advers.append(G_loss_adverserial.item())
         
         if D_loss.item()/(G_loss.item()+1e-8)<0.1:
             train_D=False
         else:
             train_D=True
 
-        print('Epoch [%d/%d], Step [%d/%d], D_loss: %.4f, G_loss: %.4f'
-              % (epoch+1, num_epochs, i+1, len(data_loader), D_loss.item(), G_loss.item()))
+        print('Epoch [%d/%d], Step [%d/%d], D_loss: %.4f, G_loss: %.4f [recon: %.4f , adverserial: %.4f]'
+              % (epoch+1, num_epochs, i+1, len(data_loader), D_loss.item(), G_loss.item(),G_loss_reconstruction.item(),G_loss_adverserial.item()))
 
     D_avg_loss = torch.mean(torch.FloatTensor(D_losses))
     G_avg_loss = torch.mean(torch.FloatTensor(G_losses))
-    torch.save(G.state_dict(),'MNIST_Grammar_checkpoints/'+str(epoch))
+    G_avg_recon = torch.mean(torch.FloatTensor(G_recons))
+    G_avg_advers = torch.mean(torch.FloatTensor(G_advers))
+
+    torch.save(G.state_dict(),'/scratch/gpfs/sreejank/MNIST_Grammar_checkpoints/'+str(epoch))
 
     # avg loss values for plot
     D_avg_losses.append(D_avg_loss)
     G_avg_losses.append(G_avg_loss)
+    G_avg_recons.append(G_avg_recon)
+    G_avg_adverss.append(G_avg_advers)
 
-    plot_loss(D_avg_losses, G_avg_losses, epoch, save=True)
+    plot_loss(D_avg_losses, G_avg_losses,G_avg_recons,G_avg_adverss, epoch, save=True)
 
     # Show result for fixed noise
-    plot_result(G, fixed_noise, epoch, save=True, fig_size=(5, 5))
+    plot_result(G, fixed_loader, epoch, save=True, fig_size=(5, 5))
 
 # Make gif
 loss_plots = []
